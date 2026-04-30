@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="0.1.0"
+
+usage() {
+  cat <<EOF
+md2pdf v${VERSION} — Markdown to PDF (pandoc + lualatex via Docker)
+
+Usage: md2pdf [OPTIONS] <file.md>
+
+Options:
+  -o <output.pdf>   出力ファイル名（デフォルト: 入力と同名の .pdf）
+  --margin <mm>     マージン（デフォルト: 25mm）
+  -h, --help        このヘルプを表示
+  --version         バージョンを表示
+
+Requirements:
+  Docker Desktop が起動していること（初回実行時にイメージをビルドします）
+EOF
+}
+
+detect_share_dir() {
+  local candidates=(
+    "${HOMEBREW_PREFIX:-/opt/homebrew}/share/md2pdf"
+    "${HOME}/.local/share/md2pdf"
+    "$(cd "$(dirname "${BASH_SOURCE[0]}")/../share/md2pdf" 2>/dev/null && pwd || true)"
+  )
+  for dir in "${candidates[@]}"; do
+    if [[ -n "$dir" && -f "${dir}/docker/Dockerfile" ]]; then
+      echo "$dir"
+      return 0
+    fi
+  done
+  echo "[ERROR] md2pdf のサポートファイルが見つかりません。再インストールしてください。" >&2
+  exit 1
+}
+
+MARGIN="25mm"
+OUTPUT=""
+POSITIONAL=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)    usage; exit 0 ;;
+    --version)    echo "md2pdf v${VERSION}"; exit 0 ;;
+    -o)           OUTPUT="$2"; shift 2 ;;
+    --margin)     MARGIN="$2"; shift 2 ;;
+    *)            POSITIONAL+=("$1"); shift ;;
+  esac
+done
+
+if [[ ${#POSITIONAL[@]} -eq 0 ]]; then
+  usage
+  exit 1
+fi
+
+MD_PATH="$(cd "$(dirname "${POSITIONAL[0]}")" && pwd)/$(basename "${POSITIONAL[0]}")"
+WORK_DIR="$(dirname "$MD_PATH")"
+MD_FILE="$(basename "$MD_PATH")"
+PDF_FILE="${OUTPUT:-${MD_FILE%.md}.pdf}"
+
+SHARE_DIR="$(detect_share_dir)"
+
+bash "${SHARE_DIR}/ensure-image.sh"
+
+echo "[INFO] PDF を生成します: $MD_FILE -> $PDF_FILE"
+
+docker run --rm \
+  -v "$WORK_DIR":/workdir \
+  pandoc-ja:latest \
+  "$MD_FILE" \
+    -o "$PDF_FILE" \
+    --pdf-engine=lualatex \
+    -V documentclass=jlreq \
+    -V classoption=lualatex \
+    -V "geometry=margin=${MARGIN}" \
+    2>&1 | tee /tmp/pandoc-build.log
+
+EXIT_CODE=${PIPESTATUS[0]}
+if [[ $EXIT_CODE -ne 0 ]]; then
+  echo "[ERROR] ビルドに失敗しました。ログ末尾:"
+  tail -50 /tmp/pandoc-build.log
+  exit 1
+fi
+
+echo "[OK] 生成完了: ${WORK_DIR}/${PDF_FILE}"
